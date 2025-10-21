@@ -42,13 +42,13 @@ async def chat_completions(request: CreateChatCompletionRequest, http_request: R
 
     fully_done = False
     while not fully_done:
-        # json_data = request.model_dump_json(
-        #     exclude_defaults=True, exclude_none=True, exclude_unset=True
-        # )
+        # Preserve response_format for structured outputs support
+        request_dict = request.model_dump(exclude_defaults=True, exclude_none=True, exclude_unset=True)
+        # Ensure response_format is included if present in original request
+        if hasattr(request, 'response_format') and request.response_format is not None:
+            request_dict['response_format'] = request.response_format.model_dump(exclude_none=True)
 
-        json_data = json.dumps(request.model_dump(
-            exclude_defaults=True, exclude_none=True, exclude_unset=True
-        ))
+        json_data = json.dumps(request_dict)
 
         # logger.debug(json_data)
 

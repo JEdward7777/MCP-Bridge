@@ -24,13 +24,16 @@ async def chat_completions(
     while True:
         # logger.debug(request.model_dump_json())
         async with get_client(http_request) as client:
+            # Preserve response_format for structured outputs support
+            request_dict = request.model_dump(exclude_defaults=True, exclude_none=True, exclude_unset=True)
+            # Ensure response_format is included if present in original request
+            if hasattr(request, 'response_format') and request.response_format is not None:
+                request_dict['response_format'] = request.response_format.model_dump(exclude_none=True)
+            
             text = (
                 await client.post(
                     "/chat/completions",
-                    #content=request.model_dump_json(
-                    #    exclude_defaults=True, exclude_none=True, exclude_unset=True
-                    #),
-                    json=request.model_dump(exclude_defaults=True, exclude_none=True, exclude_unset=True),
+                    json=request_dict,
                 )
             ).text
         logger.debug(text)
