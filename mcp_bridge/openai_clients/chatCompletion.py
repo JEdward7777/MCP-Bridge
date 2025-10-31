@@ -43,21 +43,32 @@ async def chat_completions(
             logger.error(e)
             return
 
-        msg = response.choices[0].message
+        # Scan ALL choices to find if ANY has tool calls
+        tool_call_choice_index = None
+        for idx, choice in enumerate(response.choices):
+            if choice.message.tool_calls is not None and len(choice.message.tool_calls.root) > 0:
+                tool_call_choice_index = idx
+                logger.debug(f"Tool call detected in choice[{idx}]")
+                break
+        
+        # Use the choice with tool calls, or default to choice[0] if none found
+        active_choice_idx = tool_call_choice_index if tool_call_choice_index is not None else 0
+        active_choice = response.choices[active_choice_idx]
+        
         msg = ChatCompletionRequestMessage(
             role="assistant",
-            content=msg.content,
-            tool_calls=msg.tool_calls,
+            content=active_choice.message.content,
+            tool_calls=active_choice.message.tool_calls,
         )  # type: ignore
         request.messages.append(msg)
 
-        logger.debug(f"finish reason: {response.choices[0].finish_reason}")
-        if response.choices[0].finish_reason.value in ["stop", "length"]:
+        logger.debug(f"finish reason: {active_choice.finish_reason}")
+        if active_choice.finish_reason.value in ["stop", "length"]:
             logger.debug("no tool calls found")
             return response
 
         logger.debug("tool calls found")
-        for tool_call in response.choices[0].message.tool_calls.root:
+        for tool_call in active_choice.message.tool_calls.root:
             logger.debug(
                 f"tool call: {tool_call.function.name} arguments: {json.loads(tool_call.function.arguments)}"
             )

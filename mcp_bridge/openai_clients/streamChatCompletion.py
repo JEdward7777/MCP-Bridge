@@ -58,6 +58,7 @@ async def chat_completions(request: CreateChatCompletionRequest, http_request: R
         should_forward: bool = True
         response_content: str = ""
         tool_call_id: str = ""
+        tool_call_choice_index: Optional[int] = None  # Track which choice has the tool call
 
         async with get_client(http_request) as client:
             async with aconnect_sse(
@@ -95,7 +96,9 @@ async def chat_completions(request: CreateChatCompletionRequest, http_request: R
 
                     # for some reason openrouter uses uppercase for finish_reason
                     try:
-                        data['choices'][0]['finish_reason'] = data['choices'][0]['finish_reason'].lower() # type: ignore
+                        for choice_data in data.get('choices', []): # type: ignore
+                            if 'finish_reason' in choice_data and choice_data['finish_reason'] is not None:
+                                choice_data['finish_reason'] = choice_data['finish_reason'].lower()
                     except Exception as e:
                         logger.debug(f"failed to lowercase finish_reason: {e}")
 
@@ -107,39 +110,49 @@ async def chat_completions(request: CreateChatCompletionRequest, http_request: R
                         logger.debug(data)
                         raise e
 
-                    # add the delta to the response content
-                    content = parsed_data.choices[0].delta.content if len(parsed_data.choices) > 0 else ""
-                    content = content if content is not None else ""
-                    response_content += content
+                    # Scan ALL choices to detect if ANY has tool calls
+                    if tool_call_choice_index is None and len(parsed_data.choices) > 0:
+                        for idx, choice in enumerate(parsed_data.choices):
+                            if choice.delta.tool_calls is not None:
+                                should_forward = False
+                                tool_call_choice_index = idx
+                                logger.debug(f"Tool call detected in choice[{idx}]")
+                                break
+                    
+                    # Determine which choice to use for processing
+                    active_choice_idx = tool_call_choice_index if tool_call_choice_index is not None else 0
+                    
+                    # Accumulate content from the active choice
+                    if len(parsed_data.choices) > active_choice_idx:
+                        content = parsed_data.choices[active_choice_idx].delta.content
+                        content = content if content is not None else ""
+                        response_content += content
 
-                    # handle stop reasons
-                    if  len(parsed_data.choices) > 0 and parsed_data.choices[0].finish_reason is not None:
-                        if parsed_data.choices[0].finish_reason.value in [
-                            "stop",
-                            "length",
-                        ]:
-                            fully_done = True
-                        else:
-                            should_forward = False
+                    # Handle stop reasons from the active choice
+                    if len(parsed_data.choices) > active_choice_idx:
+                        choice = parsed_data.choices[active_choice_idx]
+                        if choice.finish_reason is not None:
+                            if choice.finish_reason.value in ["stop", "length"]:
+                                fully_done = True
+                            else:
+                                should_forward = False
 
-                    # this manages the incoming tool call schema
-                    # most of this is assertions to please mypy
-                    if len(parsed_data.choices) > 0 and parsed_data.choices[0].delta.tool_calls is not None:
-                        should_forward = False
-                        assert (
-                            parsed_data.choices[0].delta.tool_calls[0].function is not None
-                        )
+                    # Process tool calls from the active choice
+                    if tool_call_choice_index is not None and len(parsed_data.choices) > tool_call_choice_index:
+                        choice = parsed_data.choices[tool_call_choice_index]
+                        if choice.delta.tool_calls is not None:
+                            assert choice.delta.tool_calls[0].function is not None
 
-                        name = parsed_data.choices[0].delta.tool_calls[0].function.name
-                        name = name if name is not None else ""
-                        tool_call_name = name if tool_call_name == "" else tool_call_name
+                            name = choice.delta.tool_calls[0].function.name
+                            name = name if name is not None else ""
+                            tool_call_name = name if tool_call_name == "" else tool_call_name
 
-                        call_id = parsed_data.choices[0].delta.tool_calls[0].id
-                        call_id = call_id if call_id is not None else ""
-                        tool_call_id = id if tool_call_id == "" else tool_call_id
+                            call_id = choice.delta.tool_calls[0].id
+                            call_id = call_id if call_id is not None else ""
+                            tool_call_id = call_id if tool_call_id == "" else tool_call_id
 
-                        arg = parsed_data.choices[0].delta.tool_calls[0].function.arguments
-                        tool_call_json += arg if arg is not None else ""
+                            arg = choice.delta.tool_calls[0].function.arguments
+                            tool_call_json += arg if arg is not None else ""
 
                     # forward SSE messages to the client
                     logger.debug(f"{should_forward=}")
@@ -151,15 +164,17 @@ async def chat_completions(request: CreateChatCompletionRequest, http_request: R
                     # save the last message
                     last = parsed_data
 
-        # ideally we should check this properly
+        # Check finish reason from the active choice
         assert last is not None
-        if len(last.choices) > 0:
-            assert last.choices[0].finish_reason is not None
-
-        if len(last.choices) > 0 and last.choices[0].finish_reason.value in ["stop", "length"]:
-            logger.debug("no tool calls found")
-            fully_done = True
-            continue
+        active_choice_idx = tool_call_choice_index if tool_call_choice_index is not None else 0
+        
+        if len(last.choices) > active_choice_idx:
+            assert last.choices[active_choice_idx].finish_reason is not None
+            
+            if last.choices[active_choice_idx].finish_reason.value in ["stop", "length"]:
+                logger.debug("no tool calls found")
+                fully_done = True
+                continue
 
         logger.debug("tool calls found")
         logger.debug(
