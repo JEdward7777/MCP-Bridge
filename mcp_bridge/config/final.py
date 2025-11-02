@@ -14,6 +14,9 @@ class InferenceServer(BaseModel):
     api_key: str = Field(
         default="unauthenticated", description="API key for the inference server"
     )
+    use_client_key: bool = Field(
+        default=True, description="Use client's authorization header if provided instead of configured API key"
+    )
 
 
 class Logging(BaseModel):
